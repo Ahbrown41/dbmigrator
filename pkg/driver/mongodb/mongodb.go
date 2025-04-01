@@ -4,6 +4,7 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -17,15 +18,16 @@ import (
 )
 
 type MongoDriver struct {
-	client   *mongo.Client
-	db       *mongo.Database
-	migColl  *mongo.Collection
-	lockColl *mongo.Collection
-	hostID   string
-	lockID   string
+	client           *mongo.Client
+	db               *mongo.Database
+	migColl          *mongo.Collection
+	lockColl         *mongo.Collection
+	hostID           string
+	lockID           string
+	withTransactions bool
 }
 
-func NewDriver(uri, dbName string) (*MongoDriver, error) {
+func NewDriver(uri, dbName string, withTransactions bool) (*MongoDriver, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -53,11 +55,12 @@ func NewDriver(uri, dbName string) (*MongoDriver, error) {
 	hostID := fmt.Sprintf("%s-%s", hostname, uuid.New().String())
 
 	return &MongoDriver{
-		client:   client,
-		db:       db,
-		migColl:  migColl,
-		lockColl: lockColl,
-		hostID:   hostID,
+		client:           client,
+		db:               db,
+		migColl:          migColl,
+		lockColl:         lockColl,
+		hostID:           hostID,
+		withTransactions: withTransactions,
 	}, nil
 }
 
@@ -159,34 +162,40 @@ func (d *MongoDriver) ExecuteMigration(ctx context.Context, name, content string
 
 	startTime := time.Now()
 
-	// Parse JavaScript content into BSON
-	var doc bson.D
 	var execErr error
-	err = bson.UnmarshalExtJSON([]byte(content), true, &doc)
+	var migration bson.D
+	if err := bson.UnmarshalExtJSON([]byte(content), false, &migration); err != nil {
+		log.Fatalf("Failed to unmarshal JSON: %v: %s", err, content)
+	}
 
 	if err != nil {
 		execErr = err
 	} else {
-		// Use a session with transaction if possible
-		err = d.db.Client().UseSession(ctx, func(sc mongo.SessionContext) error {
-			if err := sc.StartTransaction(); err != nil {
-				return err
-			}
-
-			// Execute the commands in the document
-			for _, elem := range doc {
-				command := bson.D{{Key: elem.Key, Value: elem.Value}}
-				if err := d.db.RunCommand(sc, command).Err(); err != nil {
+		for retries := 0; retries < 3; retries++ {
+			err = d.db.Client().UseSession(ctx, func(sc mongo.SessionContext) error {
+				if d.withTransactions {
+					if err := sc.StartTransaction(); err != nil {
+						return err
+					}
+				}
+				if err := d.db.RunCommand(sc, migration).Err(); err != nil {
 					sc.AbortTransaction(sc)
+					execErr = err
 					return err
 				}
+				if d.withTransactions {
+					return sc.CommitTransaction(sc)
+				}
+				return nil
+			})
+			if err != nil {
+				break
 			}
-
-			return sc.CommitTransaction(sc)
-		})
-
-		if err != nil {
-			execErr = err
+			if !mongo.IsDuplicateKeyError(err) {
+				execErr = err
+				break
+			}
+			time.Sleep(100 * time.Millisecond) // Backoff before retrying
 		}
 	}
 

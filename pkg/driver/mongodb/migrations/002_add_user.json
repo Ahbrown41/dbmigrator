@@ -1,0 +1,12 @@
+{
+  "insert": "users",
+  "documents": [
+    {
+      "name": "John Doe",
+      "email": "john.doe@example.com",
+      "createdAt": {
+        "$date": "2025-03-15T00:00:00Z"
+      }
+    }
+  ]
+}

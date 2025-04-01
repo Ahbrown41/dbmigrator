@@ -34,16 +34,6 @@ func NewDriver(connStr, username, password, bucketName string) (*CouchbaseDriver
 	// Get bucket reference
 	bucket := cluster.Bucket(bucketName)
 
-	// Wait for bucket to be ready
-	err = bucket.WaitUntilReady(5*time.Second, nil)
-	if err != nil {
-		err = cluster.Close(nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to close cluster after bucket wait error: %w", err)
-		}
-		return nil, err
-	}
-
 	// Get collection references
 	migColl := bucket.DefaultCollection()
 	lockColl := bucket.DefaultCollection()

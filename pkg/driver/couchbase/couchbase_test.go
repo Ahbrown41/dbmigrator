@@ -1,11 +1,9 @@
-package couchbase
+package couchbase_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
+	"github.com/ahbrown41/dbmigrator/pkg/driver/couchbase"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,8 +11,6 @@ import (
 	"time"
 
 	"github.com/couchbase/gocb/v2"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/ahbrown41/dbmigrator/pkg/migrator"
 )
@@ -27,140 +23,15 @@ func TestCouchbaseDriver(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Start Couchbase container
-	couchbaseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image: "couchbase:7.6.5",
-			ExposedPorts: []string{
-				"8091/tcp",  // Web UI
-				"8092/tcp",  // API
-				"8093/tcp",  // Query
-				"8094/tcp",  // Search
-				"11210/tcp", // Data
-			},
-			WaitingFor: wait.ForHTTP("/ui/index.html").WithPort("8091/tcp"),
-			Env: map[string]string{
-				"COUCHBASE_ADMINISTRATOR_USERNAME": "Administrator",
-				"COUCHBASE_ADMINISTRATOR_PASSWORD": "password",
-			},
-		},
-		Started: true,
-	})
-	if err != nil {
-		t.Fatalf("Failed to start Couchbase container: %v", err)
-	}
-	defer couchbaseContainer.Terminate(ctx)
-
-	// Get connection details
-	host, err := couchbaseContainer.Host(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get host: %v", err)
-	}
-
 	// Setup credentials
 	username := "Administrator"
 	password := "password"
-	rbac_user := "testuser"
-	rbac_pass := "testpass"
 	bucketName := "testbucket"
 
-	// Get management port
-	mgmtPort, err := couchbaseContainer.MappedPort(ctx, "8091/tcp")
-	if err != nil {
-		t.Fatalf("Failed to get port: %v", err)
-	}
-
-	// Initialize Couchbase cluster
-	baseURL := fmt.Sprintf("http://%s:%s", host, mgmtPort.Port())
-
-	// Step 1: Initialize node
-	t.Log("Initializing Couchbase node...")
-	initNodeData := "memoryQuota=512&indexMemoryQuota=512&ftsMemoryQuota=256&cbasMemoryQuota=1024&kv=on&n1ql=on&index=on&fts=on"
-	req, _ := http.NewRequest("POST", baseURL+"/nodes/self/controller/settings", bytes.NewBufferString(initNodeData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to initialize node: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Failed to initialize node, status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Step 2: Set up services
-	t.Log("Setting up services...")
-	servicesData := "services=kv%2Cn1ql%2Cindex"
-	req, _ = http.NewRequest("POST", baseURL+"/node/controller/setupServices", bytes.NewBufferString(servicesData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to setup services: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Failed to initialize node, status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Step 3: Set admin credentials
-	t.Log("Setting admin credentials...")
-	credentialsData := fmt.Sprintf("password=%s&username=%s&port=SAME", password, username)
-	req, _ = http.NewRequest("POST", baseURL+"/settings/web", bytes.NewBufferString(credentialsData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to set credentials: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Failed to initialize node, status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Step 4: Create bucket
-	t.Log("Creating bucket...")
-	bucketData := fmt.Sprintf("name=%s&bucketType=couchbase&ramQuotaMB=128&replicaNumber=0", bucketName)
-	req, _ = http.NewRequest("POST", baseURL+"/pools/default/buckets", bytes.NewBufferString(bucketData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(username, password)
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to create bucket: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Failed to initialize node, status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Step 5: Create RBAC user with access to the bucket
-	t.Log("Creating RBAC user...")
-	rbacUserData := fmt.Sprintf("name=%s&password=%s&roles=bucket_full_access[%s],query_select[%s],query_update[%s],query_insert[%s],query_delete[%s]", rbac_user, rbac_pass, bucketName, bucketName, bucketName, bucketName, bucketName)
-	req, _ = http.NewRequest("PUT", baseURL+"/settings/rbac/users/local/testuser", bytes.NewBufferString(rbacUserData))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(username, password)
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to create RBAC user: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Failed to create RBAC user, status: %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	// Wait for bucket and user to be ready
-	t.Log("Waiting for bucket and user to be ready...")
-	time.Sleep(15 * time.Second)
-
-	clientPort, err := couchbaseContainer.MappedPort(ctx, "8093/tcp")
-	if err != nil {
-		t.Fatalf("Failed to get port: %v", err)
-	}
-
-	// Create connection string
-	connStr := fmt.Sprintf("couchbase://%s:%s", host, clientPort.Port())
+	// Start Couchbase container
+	server := NewCouchbaseServer(username, password, bucketName)
+	server.Start(t)
+	defer server.Stop(t)
 
 	// Create temp migration dir
 	migrationDir, err := os.MkdirTemp("", "couchbase-migrations")
@@ -171,8 +42,10 @@ func TestCouchbaseDriver(t *testing.T) {
 
 	// Create test migrations
 	migrations := map[string]string{
-		"001_create_users_index.n1ql": `
+		"000_create_primary_index.n1ql": `
             CREATE PRIMARY INDEX ON ${BUCKET};
+        `,
+		"001_create_users_index.n1ql": `
             CREATE INDEX idx_users_email ON ${BUCKET}(email) WHERE type = "user";
         `,
 		"002_add_user.n1ql": `
@@ -208,36 +81,11 @@ func TestCouchbaseDriver(t *testing.T) {
 		}
 	}
 
-	// Create driver with the RBAC user credentials
-	t.Log("Creating driver...")
-	driver, err := NewDriver(connStr, rbac_user, rbac_pass, bucketName)
-	if err != nil {
-		t.Fatalf("Failed to create driver: %v", err)
-	}
-	defer driver.Close()
-
-	// Test connection to verify credentials work
-	t.Log("Testing connection...")
-	cluster, err := gocb.Connect(connStr, gocb.ClusterOptions{
-		Username: rbac_user,
-		Password: rbac_pass,
-	})
-	if err != nil {
-		t.Fatalf("Failed to connect to Couchbase with RBAC user: %v", err)
-	}
-
-	// Ping bucket to verify access
-	bucket := cluster.Bucket(bucketName)
-	err = bucket.WaitUntilReady(5*time.Second, nil)
-	if err != nil {
-		t.Fatalf("Failed to access bucket with RBAC user: %v", err)
-	}
-	cluster.Close(nil)
-
 	// Test basic migration functionality
 	t.Run("BasicMigration", func(t *testing.T) {
 		// Create driver
-		driver, err := NewDriver(connStr, username, password, bucketName)
+		var driver *couchbase.CouchbaseDriver
+		driver, err = couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
 		if err != nil {
 			t.Fatalf("Failed to create driver: %v", err)
 		}
@@ -260,12 +108,12 @@ func TestCouchbaseDriver(t *testing.T) {
 			t.Fatalf("Failed to get migrations: %v", err)
 		}
 
-		if len(executed) != 4 {
-			t.Fatalf("Expected 4 migrations, got %d", len(executed))
+		if len(executed) != 5 {
+			t.Fatalf("Expected 5 migrations, got %d", len(executed))
 		}
 
 		// Verify data was inserted by connecting directly to Couchbase
-		cluster, err := gocb.Connect(connStr, gocb.ClusterOptions{
+		cluster, err := gocb.Connect(server.ConnectionString(), gocb.ClusterOptions{
 			Username: username,
 			Password: password,
 		})
@@ -339,13 +187,13 @@ func TestCouchbaseDriver(t *testing.T) {
 			t.Fatalf("Failed to get migrations after second run: %v", err)
 		}
 
-		if len(executed) != 4 {
+		if len(executed) != 5 {
 			t.Fatalf("Expected still 4 migrations after second run, got %d", len(executed))
 		}
 	})
 
 	// Reset bucket for concurrency test
-	resetCluster, err := gocb.Connect(connStr, gocb.ClusterOptions{
+	resetCluster, err := gocb.Connect(server.ConnectionString(), gocb.ClusterOptions{
 		Username: username,
 		Password: password,
 	})
@@ -377,7 +225,7 @@ func TestCouchbaseDriver(t *testing.T) {
 		defer cancel()
 
 		// First, create and initialize a driver to set up the collections and indexes
-		setupDriver, err := NewDriver(connStr, username, password, bucketName)
+		setupDriver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
 		if err != nil {
 			t.Fatalf("Failed to create setup driver: %v", err)
 		}
@@ -394,7 +242,7 @@ func TestCouchbaseDriver(t *testing.T) {
 				defer wg.Done()
 
 				// Create a new driver for each instance
-				driver, err := NewDriver(connStr, username, password, bucketName)
+				driver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
 				if err != nil {
 					errCh <- fmt.Errorf("instance %d: failed to create driver: %w", instanceID, err)
 					return
@@ -438,7 +286,7 @@ func TestCouchbaseDriver(t *testing.T) {
 		}
 
 		// Verify final state
-		driver, err := NewDriver(connStr, username, password, bucketName)
+		driver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
 		if err != nil {
 			t.Fatalf("Failed to create verification driver: %v", err)
 		}
@@ -450,12 +298,12 @@ func TestCouchbaseDriver(t *testing.T) {
 			t.Fatalf("Failed to get migrations: %v", err)
 		}
 
-		if len(executed) != 4 {
-			t.Fatalf("Expected exactly 4 migrations, got %d", len(executed))
+		if len(executed) != 5 {
+			t.Fatalf("Expected exactly 5 migrations, got %d", len(executed))
 		}
 
 		// Connect to verify data
-		cluster, err := gocb.Connect(connStr, gocb.ClusterOptions{
+		cluster, err := gocb.Connect(server.ConnectionString(), gocb.ClusterOptions{
 			Username: username,
 			Password: password,
 		})

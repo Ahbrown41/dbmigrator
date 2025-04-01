@@ -1,0 +1,13 @@
+{
+  "insert": "posts",
+  "documents": [
+    {
+      "title": "Test Post",
+      "content": "This is a test post",
+      "author": "test@example.com",
+      "createdAt": {
+        "$date": "2025-03-15T00:00:00Z"
+      }
+    }
+  ]
+}

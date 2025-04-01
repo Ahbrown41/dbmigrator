@@ -1,0 +1,27 @@
+{
+  "create": "posts",
+  "validator": {
+    "$jsonSchema": {
+      "bsonType": "object",
+      "required": [
+        "title",
+        "content",
+        "author"
+      ],
+      "properties": {
+        "title": {
+          "bsonType": "string",
+          "description": "Title of the post"
+        },
+        "content": {
+          "bsonType": "string",
+          "description": "Content of the post"
+        },
+        "author": {
+          "bsonType": "string",
+          "description": "Author of the post"
+        }
+      }
+    }
+  }
+}

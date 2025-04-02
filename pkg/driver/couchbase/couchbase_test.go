@@ -169,7 +169,7 @@ func TestCouchbaseDriver(t *testing.T) {
 	}
 
 	// Wait for flush to complete
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	resetCluster.Close(nil)
 
 	// Test concurrent migrations

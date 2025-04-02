@@ -3,6 +3,7 @@ package migrator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +25,7 @@ const (
 
 // Migrator handles the migration process
 type Migrator struct {
+	name              string
 	driver            driver.Driver
 	dir               string
 	lockTimeout       time.Duration
@@ -52,6 +54,13 @@ func WithLockRetryInterval(interval time.Duration) MigratorOption {
 func WithMaxLockRetries(retries int) MigratorOption {
 	return func(m *Migrator) {
 		m.maxLockRetries = retries
+	}
+}
+
+// WithName sets the name of the migrator
+func WithName(name string) MigratorOption {
+	return func(m *Migrator) {
+		m.name = name
 	}
 }
 
@@ -84,6 +93,10 @@ func (m *Migrator) Run(ctx context.Context) error {
 	var err error
 
 	for i := 0; i < m.maxLockRetries; i++ {
+		slog.Debug("Attempting to acquire migration lock",
+			slog.Int("attempt", i+1),
+			slog.String("migrator", m.name),
+		)
 		acquired, err = m.driver.AcquireLock(ctx, m.lockTimeout)
 		if err != nil {
 			return fmt.Errorf("failed to acquire lock: %w", err)
@@ -93,8 +106,12 @@ func (m *Migrator) Run(ctx context.Context) error {
 			break
 		}
 
-		fmt.Printf("Migration lock is held by another process, retrying in %v... (%d/%d)\n",
-			m.lockRetryInterval, i+1, m.maxLockRetries)
+		slog.Debug("Migration lock is held by another process",
+			slog.Int("attempt", i+1),
+			slog.Duration("interval", m.lockRetryInterval),
+			slog.Int("max_retries", m.maxLockRetries),
+			slog.String("migrator", m.name),
+		)
 
 		select {
 		case <-time.After(m.lockRetryInterval):
@@ -111,11 +128,12 @@ func (m *Migrator) Run(ctx context.Context) error {
 	// Ensure we release the lock when done
 	defer func() {
 		if err := m.driver.ReleaseLock(ctx); err != nil {
-			fmt.Printf("WARNING: Failed to release migration lock: %v\n", err)
+			slog.Warn("WARNING: Failed to release migration lock", slog.String("error", err.Error()), slog.String("migrator", m.name))
 		}
 	}()
 
 	// Get list of executed migrations
+	slog.Debug("Executing migrations", slog.String("migrator", m.name))
 	executed, err := m.driver.GetExecutedMigrations(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get executed migrations: %w", err)
@@ -145,11 +163,11 @@ func (m *Migrator) Run(ctx context.Context) error {
 	// Execute migrations that haven't been run
 	for _, filename := range migrations {
 		if executedMap[filename] {
-			fmt.Printf("Skipping migration: %s (already executed)\n", filename)
+			slog.Debug("Skipping migration: %s (already executed)", slog.String("filename", filename), slog.String("migrator", m.name))
 			continue
 		}
 
-		fmt.Printf("Executing migration: %s\n", filename)
+		slog.Debug("Executing migration", slog.String("filename", filename), slog.String("migrator", m.name))
 		content, err := os.ReadFile(filepath.Join(m.dir, filename))
 		if err != nil {
 			return fmt.Errorf("failed to read migration file %s: %w", filename, err)

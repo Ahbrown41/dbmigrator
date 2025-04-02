@@ -1,0 +1,4 @@
+-- Array manipulation (adding elements)
+UPDATE ${BUCKET}._default.posts
+SET tags = ARRAY_APPEND(tags, "updated")
+WHERE META().id = "post::1";

@@ -1,0 +1,9 @@
+-- Insert comment data in another collection
+INSERT INTO ${BUCKET}._default.comments (KEY, VALUE)
+VALUES ("comment::1", {
+    "id": "1",
+    "postId": "1",
+    "author": "test@example.com",
+    "content": "Test comment",
+    "createdAt": NOW_STR()
+});

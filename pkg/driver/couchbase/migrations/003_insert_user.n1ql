@@ -1,0 +1,18 @@
+-- Insert user profile
+INSERT INTO ${BUCKET}._default.profiles (KEY, VALUE)
+VALUES ("profile::1", {
+    "id": "1",
+    "name": "Test User",
+    "email": "test@example.com",
+    "bio": "Test bio",
+    "createdAt": NOW_STR()
+});
+
+-- Insert user settings
+INSERT INTO ${BUCKET}._default.settings (KEY, VALUE)
+VALUES ("settings::1", {
+    "userId": "1",
+    "theme": "light",
+    "notifications": true,
+    "createdAt": NOW_STR()
+});

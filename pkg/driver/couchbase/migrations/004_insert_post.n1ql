@@ -1,0 +1,11 @@
+-- Insert post
+INSERT INTO ${BUCKET}._default.posts (KEY, VALUE)
+VALUES ("post::1", {
+    "id": "1",
+    "title": "Test Post",
+    "content": "This is a test post content",
+    "author": "test@example.com",
+    "tags": ["test", "example"],
+    "status": "draft",
+    "createdAt": NOW_STR()
+});

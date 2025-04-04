@@ -1,11 +1,11 @@
-package driver
+package couchbase
 
 import "strings"
 
 // SplitQueries splits migration content into separate queries
 // handling multi-line statements and preserving formatting.
 // It removes empty lines and lines containing only comments.
-func SplitQueries(content string) []string {
+func splitQueries(content string) []string {
 	var queries []string
 	var currentQuery strings.Builder
 	inSingleLineComment := false

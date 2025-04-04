@@ -74,7 +74,7 @@ func (d *Driver) ExecuteMigration(ctx context.Context, name, content string) err
 
 	var execErr error
 	// Execute each query in the N1QL content
-	statements := driver.SplitQueries(n1qlContent)
+	statements := splitQueries(n1qlContent)
 	for _, statement := range statements {
 		// Execute the N1QL query
 		_, err := d.cluster.Transactions().Run(func(attemptContext *gocb.TransactionAttemptContext) error {

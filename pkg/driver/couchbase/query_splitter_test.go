@@ -1,4 +1,4 @@
-package driver
+package couchbase
 
 import (
 	"github.com/stretchr/testify/assert"
@@ -7,10 +7,10 @@ import (
 
 func TestSplitQueries(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		assert.Equal(t, 0, len(SplitQueries("")))
+		assert.Equal(t, 0, len(splitQueries("")))
 	})
 	t.Run("single", func(t *testing.T) {
-		res := SplitQueries("CREATE PRIMARY INDEX ON ${BUCKET}._default.profiles;")
+		res := splitQueries("CREATE PRIMARY INDEX ON ${BUCKET}._default.profiles;")
 		assert.Equal(t, 1, len(res))
 	})
 	t.Run("multiple", func(t *testing.T) {
@@ -18,7 +18,7 @@ func TestSplitQueries(t *testing.T) {
 			CREATE COLLECTION ${BUCKET}._default.posts IF NOT EXISTS;
 			CREATE COLLECTION ${BUCKET}._default.comments IF NOT EXISTS;
 			`
-		res := SplitQueries(query)
+		res := splitQueries(query)
 		assert.Equal(t, 2, len(res))
 	})
 	t.Run("comment", func(t *testing.T) {
@@ -27,7 +27,7 @@ func TestSplitQueries(t *testing.T) {
 			CREATE COLLECTION ${BUCKET}._default.profiles IF NOT EXISTS;
 			CREATE COLLECTION ${BUCKET}._default.settings IF NOT EXISTS;
 		`
-		res := SplitQueries(query)
+		res := splitQueries(query)
 		assert.Equal(t, 2, len(res))
 	})
 	t.Run("multiple comments", func(t *testing.T) {
@@ -37,7 +37,7 @@ func TestSplitQueries(t *testing.T) {
 			-- Insert 2
 			CREATE COLLECTION ${BUCKET}._default.settings IF NOT EXISTS;
 		`
-		res := SplitQueries(query)
+		res := splitQueries(query)
 		assert.Equal(t, 2, len(res))
 	})
 	t.Run("multiple lines", func(t *testing.T) {
@@ -61,7 +61,7 @@ func TestSplitQueries(t *testing.T) {
 				"createdAt": NOW_STR()
 			});
 		`
-		res := SplitQueries(query)
+		res := splitQueries(query)
 		assert.Equal(t, 2, len(res))
 	})
 }

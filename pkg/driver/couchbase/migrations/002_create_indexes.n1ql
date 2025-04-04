@@ -4,5 +4,3 @@ CREATE PRIMARY INDEX IF NOT EXISTS ON ${BUCKET}.my_scope.posts;
 
 -- Create secondary indexes
 CREATE INDEX idx_profiles_email IF NOT EXISTS ON ${BUCKET}.my_scope.profiles(email);
-CREATE INDEX idx_posts_author IF NOT EXISTS ON ${BUCKET}.my_scope.posts(author);
-CREATE INDEX idx_posts_created IF NOT EXISTS ON ${BUCKET}.my_scope.posts(createdAt);

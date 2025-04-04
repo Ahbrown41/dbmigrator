@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,66 +24,73 @@ const (
 	KvPort     = "11210"
 	ViewPort   = "8092"
 	initScript = `#!/bin/sh
-		#!/bin/sh
-		
-		# Start Couchbase server in the background
-		/entrypoint.sh couchbase-server &
-		
-		# Wait for Couchbase server to start (basic UI access)
-		until curl -s http://127.0.0.1:8091/ui/index.html > /dev/null; do
-			echo "Waiting for Couchbase server to start..."
-			sleep 5
-		done
-		
-		echo "Couchbase server started."
-		
-		# Provision Node
-		couchbase-cli cluster-init \
-		  -c 127.0.0.1:8091 \
-		  --cluster-username ${ADMIN_USERNAME} \
-		  --cluster-password ${ADMIN_PASSWORD} \
-		  --services data,index,query \
-		  --cluster-ramsize 512 \
-		  --cluster-index-ramsize 256
-		
-		# General Settings
-		couchbase-cli setting-cluster \
-		  -c 127.0.0.1:8091 \
-		  --username ${ADMIN_USERNAME} \
-		  --password ${ADMIN_PASSWORD} \
-		  --cluster-ramsize ${MEMORY_QUOTA} \
-		  --cluster-name 127.0.0.1 \
-		  --cluster-index-ramsize ${INDEX_MEMORY_QUOTA} \
-		  --cluster-fts-ramsize ${FTS_MEMORY_QUOTA}
-		
-		# Set up index settings
-		couchbase-cli setting-index \
-		  -c 127.0.0.1:8091 \
-		  --username ${ADMIN_USERNAME} \
-		  --password ${ADMIN_PASSWORD} \
-		  --index-log-level info \
-		  --index-stable-snapshot-interval 40000 \
-		  --index-memory-snapshot-interval 150 \
-		  --index-storage-setting default \
-		  --index-threads 8 \
-		  --index-max-rollback-points 10
-		
-		# Provision Bucket
-		couchbase-cli bucket-create \
-		  -c 127.0.0.1:8091 \
-		  --username ${ADMIN_USERNAME} \
-		  --password ${ADMIN_PASSWORD} \
-		  --bucket ${BUCKET_NAME} \
-		  --bucket-type couchbase \
-		  --bucket-ramsize ${BUCKET_RAM_QUOTA} \
-		  --enable-flush 1 \
-		  --wait
-		
-		echo "Couchbase setup completed successfully."
-		
-		# Keep the Couchbase server running
-		wait
-	`
+  #!/bin/sh
+
+  # Start Couchbase server in the background
+  /entrypoint.sh couchbase-server &
+
+  # Wait for Couchbase server to start (basic UI access)
+  until curl -s http://127.0.0.1:8091/ui/index.html > /dev/null; do
+   echo "Waiting for Couchbase server to start..."
+   sleep 5
+  done
+
+  echo "Couchbase server started."
+
+  # Provision Node
+  couchbase-cli cluster-init \
+    -c 127.0.0.1:8091 \
+    --cluster-username ${ADMIN_USERNAME} \
+    --cluster-password ${ADMIN_PASSWORD} \
+    --services data,index,query \
+    --cluster-ramsize 512 \
+    --cluster-index-ramsize 256
+
+  # General Settings
+  couchbase-cli setting-cluster \
+    -c 127.0.0.1:8091 \
+    --username ${ADMIN_USERNAME} \
+    --password ${ADMIN_PASSWORD} \
+    --cluster-ramsize ${MEMORY_QUOTA} \
+    --cluster-name 127.0.0.1 \
+    --cluster-index-ramsize ${INDEX_MEMORY_QUOTA} \
+    --cluster-fts-ramsize ${FTS_MEMORY_QUOTA}
+
+  # Set up index settings
+  couchbase-cli setting-index \
+    -c 127.0.0.1:8091 \
+    --username ${ADMIN_USERNAME} \
+    --password ${ADMIN_PASSWORD} \
+    --index-log-level info \
+    --index-stable-snapshot-interval 40000 \
+    --index-memory-snapshot-interval 150 \
+    --index-storage-setting default \
+    --index-threads 8 \
+    --index-max-rollback-points 10
+
+  # Provision Bucket
+  couchbase-cli bucket-create \
+    -c 127.0.0.1:8091 \
+    --username ${ADMIN_USERNAME} \
+    --password ${ADMIN_PASSWORD} \
+    --bucket ${BUCKET_NAME} \
+    --bucket-type couchbase \
+    --bucket-ramsize ${BUCKET_RAM_QUOTA} \
+    --enable-flush 1 \
+    --wait
+
+  echo "Couchbase setup completed successfully."
+
+  # Keep the Couchbase server running
+  wait
+ `
+)
+
+// Global singleton instance of CouchbaseServer
+var (
+	globalCouchbaseServer *CouchbaseServer
+	serverInitOnce        sync.Once
+	serverInitError       error
 )
 
 type CouchbaseServer struct {
@@ -92,6 +100,7 @@ type CouchbaseServer struct {
 	username     string
 	password     string
 	bucketName   string
+	mu           sync.Mutex // To protect concurrent access to the server
 }
 
 func NewCouchbaseServer(username, password, bucketName string) *CouchbaseServer {
@@ -102,18 +111,58 @@ func NewCouchbaseServer(username, password, bucketName string) *CouchbaseServer 
 	}
 }
 
+// GetCouchbaseServer returns the singleton instance of CouchbaseServer
+func GetCouchbaseServer(t *testing.T, username, password, bucketName string) (*CouchbaseServer, error) {
+	serverInitOnce.Do(func() {
+		globalCouchbaseServer = NewCouchbaseServer(username, password, bucketName)
+		serverInitError = globalCouchbaseServer.startInternal(t)
+		if serverInitError != nil {
+			t.Logf("Failed to initialize Couchbase server: %v", serverInitError)
+		} else {
+			// Register cleanup on test completion
+			t.Cleanup(func() {
+				ctx := context.Background()
+				if globalCouchbaseServer != nil && globalCouchbaseServer.container != nil {
+					if err := globalCouchbaseServer.container.Terminate(ctx); err != nil {
+						t.Logf("Failed to terminate Couchbase container: %v", err)
+					}
+					globalCouchbaseServer = nil
+				}
+			})
+		}
+	})
+
+	return globalCouchbaseServer, serverInitError
+}
+
+// Start initializes the Couchbase server if it hasn't been initialized already
 func (c *CouchbaseServer) Start(t *testing.T) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if globalCouchbaseServer != nil && globalCouchbaseServer.container != nil {
+		// Server already started, nothing to do
+		return
+	}
+
+	if err := c.startInternal(t); err != nil {
+		t.Fatalf("Failed to start Couchbase server: %v", err)
+	}
+}
+
+// startInternal contains the actual server startup logic
+func (c *CouchbaseServer) startInternal(t *testing.T) error {
 	ctx := context.Background()
 
 	// Setup Script
 	setupFile := filepath.Join(t.TempDir(), "setup_couchbase.sh")
 	err := os.WriteFile(setupFile, []byte(initScript), 0600)
 	if err != nil {
-		t.Fatalf("Failed to write setup script: %v", err)
+		return fmt.Errorf("failed to write setup script: %w", err)
 	}
 	defer func() {
 		if err := os.Remove(setupFile); err != nil {
-			t.Fatalf("Failed to remove setup script: %v", err)
+			t.Logf("Failed to remove setup script: %v", err)
 		}
 	}()
 
@@ -150,18 +199,18 @@ func (c *CouchbaseServer) Start(t *testing.T) {
 		Started: true,
 	})
 	if err != nil {
-		t.Fatalf("Failed to start Couchbase container: %v", err)
+		return fmt.Errorf("failed to start Couchbase container: %w", err)
 	}
 
 	// Get Container Host and Port
 	host, err := c.container.Host(ctx)
 	if err != nil {
-		t.Fatalf("failed to get container host: %v", err)
+		return fmt.Errorf("failed to get container host: %w", err)
 	}
 
 	clientPort, err := c.container.MappedPort(ctx, nat.Port(KvPort))
 	if err != nil {
-		t.Fatalf("Failed to get driver port: %v", err)
+		return fmt.Errorf("failed to get driver port: %w", err)
 	}
 
 	// Create connection string
@@ -171,7 +220,7 @@ func (c *CouchbaseServer) Start(t *testing.T) {
 
 	mgmtPort, err := c.container.MappedPort(ctx, nat.Port(MgmtPort))
 	if err != nil {
-		t.Fatalf("Failed to get mgmt port: %v", err)
+		return fmt.Errorf("failed to get mgmt port: %w", err)
 	}
 
 	// Create management connection string
@@ -186,7 +235,7 @@ func (c *CouchbaseServer) Start(t *testing.T) {
 	ports := map[string]string{"mgmt": MgmtPort, "kv": KvPort, "capi": ViewPort, "n1ql": QueryPort}
 	for key, portName := range ports {
 		if port, err := c.container.MappedPort(ctx, nat.Port(portName)); err != nil {
-			t.Fatalf("failed to get mapped port %s: %v", portName, err)
+			return fmt.Errorf("failed to get mapped port %s: %w", portName, err)
 		} else {
 			params.Add(key, port.Port())
 		}
@@ -200,25 +249,26 @@ func (c *CouchbaseServer) Start(t *testing.T) {
 	client := http.Client{}
 	response, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("failed to make request: %v", err)
+		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("failed to connect to Couchbase server: %s", response.Status)
+		return fmt.Errorf("failed to connect to Couchbase server: %s", response.Status)
 	}
 
 	// Wait for Couchbase services to be available
 	if err := c.waitForCouchbaseServices(ctx, host, mgmtPort.Port(), c.username, c.password); err != nil {
-		t.Fatalf("Failed waiting for Couchbase services: %v", err)
+		return fmt.Errorf("failed waiting for Couchbase services: %w", err)
 	}
+
+	return nil
 }
 
+// Stop is a no-op for singleton usage, actual cleanup happens in the test.Cleanup function
 func (c *CouchbaseServer) Stop(t *testing.T) {
-	ctx := context.Background()
-	if err := c.container.Terminate(ctx); err != nil {
-		t.Fatalf("Failed to terminate Couchbase container: %v", err)
-	}
+	// No-op for compatibility with existing tests
+	// Actual cleanup will happen via the t.Cleanup registered when the server is created
 }
 
 func (c *CouchbaseServer) ConnectionString() string {
@@ -227,6 +277,35 @@ func (c *CouchbaseServer) ConnectionString() string {
 
 func (c *CouchbaseServer) AdminConnectionString() string {
 	return c.adminConStr
+}
+
+// FlushBucket flushes the specified bucket, useful for cleaning up between tests
+func (c *CouchbaseServer) FlushBucket(t *testing.T) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	flushURL := fmt.Sprintf("%s/pools/default/buckets/%s/controller/doFlush", c.adminConStr, c.bucketName)
+
+	req, err := http.NewRequest("POST", flushURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create flush request: %w", err)
+	}
+
+	req.SetBasicAuth(c.username, c.password)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute flush request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to flush bucket: HTTP status %d", resp.StatusCode)
+	}
+
+	// Wait for flush to complete with a small but sufficient delay
+	time.Sleep(500 * time.Millisecond)
+	return nil
 }
 
 // waitForCouchbaseServices polls the Couchbase services until they are all available

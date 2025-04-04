@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"log/slog"
 	"time"
 
 	"github.com/ahbrown41/dbmigrator/pkg/driver"
@@ -34,55 +34,73 @@ func NewMigrationTracker(bucket *gocb.Bucket, scopeName, hostID string) *Migrati
 
 // Initialize creates the necessary collections and indexes
 func (t *MigrationTracker) Initialize(ctx context.Context) error {
-	// Try to create collections if they don't exist
-	collMgr := t.bucket.CollectionsV2()
-
 	// Create scope if needed
-	err := collMgr.CreateScope(
-		t.scopeName,
-		&gocb.CreateScopeOptions{},
-	)
+	collMgr := t.bucket.CollectionsV2()
+	err := collMgr.CreateScope(t.scopeName, &gocb.CreateScopeOptions{})
 
-	// Ignore "scope already exists" errors
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
+	// Ignore ErrScopeExists errors
+	if err != nil {
+		if errors.Is(err, gocb.ErrScopeExists) {
+			slog.Debug("Migration scope already exists", "scope", t.scopeName)
+			return nil
+		}
 		return fmt.Errorf("failed to create scope (%s): %w", t.scopeName, err)
+	} else {
+		if err := t.waitForScope(ctx, t.scopeName); err != nil {
+			return fmt.Errorf("failed waiting for scope (%s): %w", t.scopeName, err)
+		}
+		time.Sleep(2 * time.Second)
+		slog.Debug("Migration scope created", "scope", t.scopeName)
 	}
 
-	// Wait for scope to be available
-	if err := t.waitForScope(ctx, t.scopeName); err != nil {
-		return fmt.Errorf("failed waiting for scope (%s): %w", t.scopeName, err)
-	}
-
+	// Create collections in parallel
 	collections := [][]string{{migrationsCollection, "name"}, {locksCollectionName, "expires_at"}}
+	errChan := make(chan error, len(collections))
+
 	for _, collection := range collections {
-		// Create collection if needed
-		err = collMgr.CreateCollection(
-			t.scopeName,
-			collection[0],
-			&gocb.CreateCollectionSettings{},
-			&gocb.CreateCollectionOptions{},
-		)
+		go func(collName, indexField string) {
+			// Create collection if needed
+			err := collMgr.CreateCollection(
+				t.scopeName,
+				collName,
+				&gocb.CreateCollectionSettings{},
+				&gocb.CreateCollectionOptions{},
+			)
 
-		// Ignore "collection already exists" errors
-		if err != nil && !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("failed to create collection (%s): %w", collection[0], err)
-		}
+			// Ignore ErrCollectionExists errors
+			if err != nil {
+				if !errors.Is(err, gocb.ErrCollectionExists) {
+					errChan <- fmt.Errorf("failed to create collection (%s): %w", collName, err)
+					return
+				}
+			} else {
+				if err := t.waitForCollection(ctx, t.scopeName, collName); err != nil {
+					errChan <- fmt.Errorf("failed waiting for collection (%s): %w", collName, err)
+					return
+				}
+				time.Sleep(2 * time.Second)
+				slog.Debug("Migration collection created", slog.String("scope", t.scopeName), slog.String("collection", collName))
+			}
 
-		// Wait for collection to be available
-		if err := t.waitForCollection(ctx, t.scopeName, collection[0]); err != nil {
-			return fmt.Errorf("failed waiting for collection (%s): %w", collection[0], err)
-		}
+			// Create index for collections
+			indexQuery := fmt.Sprintf(`
+                CREATE INDEX IF NOT EXISTS idx_%s ON %s.%s.%s(%s)
+            `, collName, t.bucket.Name(), t.scopeName, collName, indexField)
 
-		// Create index for migrations by name if needed
-		time.Sleep(5 * time.Second)
-		indexQuery := fmt.Sprintf(`
-        	CREATE INDEX IF NOT EXISTS idx_%s ON %s.%s.%s(%s)
-    	`, collection[0], t.bucket.Name(), t.scopeName, collection[0], collection[1])
+			_, err = t.bucket.Scope(t.scopeName).Query(indexQuery, &gocb.QueryOptions{Context: ctx})
+			if err != nil {
+				errChan <- fmt.Errorf("failed to create index for %s: %w", collName, err)
+				return
+			}
 
-		// Execute the query - using the cluster directly from the collection
-		_, err = t.bucket.Scope(t.scopeName).Query(indexQuery, &gocb.QueryOptions{Context: ctx})
-		if err != nil {
-			return fmt.Errorf("failed to create migrations index: %w", err)
+			errChan <- nil
+		}(collection[0], collection[1])
+	}
+
+	// Wait for all operations to complete
+	for range collections {
+		if err := <-errChan; err != nil {
+			return err
 		}
 	}
 
@@ -91,8 +109,8 @@ func (t *MigrationTracker) Initialize(ctx context.Context) error {
 
 // waitForScope waits until a scope exists and is available
 func (d *MigrationTracker) waitForScope(ctx context.Context, scopeName string) error {
-	maxRetries := 10
-	retryDelay := time.Second
+	maxRetries := 5
+	retryDelay := 500 * time.Millisecond
 
 	for i := 0; i < maxRetries; i++ {
 		// Check if scope exists by listing all scopes
@@ -112,9 +130,9 @@ func (d *MigrationTracker) waitForScope(ctx context.Context, scopeName string) e
 			// Continue with next iteration
 		}
 
-		retryDelay *= 2 // Exponential backoff
-		if retryDelay > 10*time.Second {
-			retryDelay = 10 * time.Second // Cap at 10s
+		retryDelay += 500 * time.Millisecond // Linear backoff
+		if retryDelay > 2*time.Second {
+			retryDelay = 2 * time.Second // Cap at 2s
 		}
 	}
 

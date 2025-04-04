@@ -3,6 +3,7 @@ package couchbase_test
 import (
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"log/slog"
 	"os"
 	"strings"
@@ -28,27 +29,29 @@ func TestCouchbaseDriver(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup credentials
-	username := "Administrator"
-	password := "password"
-	bucketName := "testbucket"
-	scopeName := "my_scope"
+	const (
+		username     = "admin"
+		password     = "password"
+		bucketName   = "test_bucket"
+		scopeName    = "my_scope"
+		migrationDir = "./migrations"
+	)
 
-	// Start Couchbase container
-	server := NewCouchbaseServer(username, password, bucketName)
-	server.Start(t)
-	defer server.Stop(t)
+	// Get singleton server instance instead of creating a new one
+	server, err := GetCouchbaseServer(t, username, password, bucketName)
+	require.NoError(t, err, "Failed to get Couchbase server")
 
-	// Create test migrations
-	migrationDir := "./migrations"
+	// For any test requiring a clean state, flush the bucket instead of recreating
+	err = server.FlushBucket(t)
+	require.NoError(t, err)
 
+	// Create the scope and run setup
 	cluster, err := gocb.Connect(server.ConnectionString(), gocb.ClusterOptions{
 		Username: username,
 		Password: password,
 	})
-	assert.NoError(t, err)
-	defer func() {
-		cluster.Close(nil)
-	}()
+	require.NoError(t, err)
+	defer cluster.Close(nil)
 
 	// Test basic migration functionality
 	t.Run("BasicMigration", func(t *testing.T) {
@@ -300,7 +303,7 @@ func TestCouchbaseDriver(t *testing.T) {
         `, bucketName, scopeName)
 
 		userResult, err := cluster.Query(userCountQuery, nil)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer userResult.Close()
 
 		var userCount struct {

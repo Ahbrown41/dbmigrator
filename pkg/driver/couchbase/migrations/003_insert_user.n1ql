@@ -1,5 +1,5 @@
 -- Insert user profile
-INSERT INTO ${BUCKET}._default.profiles (KEY, VALUE)
+INSERT INTO ${BUCKET}.my_scope.profiles (KEY, VALUE)
 VALUES ("profile::1", {
     "id": "1",
     "name": "Test User",
@@ -9,7 +9,7 @@ VALUES ("profile::1", {
 });
 
 -- Insert user settings
-INSERT INTO ${BUCKET}._default.settings (KEY, VALUE)
+INSERT INTO ${BUCKET}.my_scope.settings (KEY, VALUE)
 VALUES ("settings::1", {
     "userId": "1",
     "theme": "light",

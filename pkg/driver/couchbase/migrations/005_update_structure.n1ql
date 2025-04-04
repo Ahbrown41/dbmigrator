@@ -1,5 +1,5 @@
 -- Rename field and add new fields (demonstrating schema evolution)
-UPDATE ${BUCKET}._default.posts
+UPDATE ${BUCKET}.my_scope.posts
 SET status = "published",
     publishedAt = NOW_STR(),
     content = OBJECT_PUT(content, "summary", "This is a summary")

@@ -1,0 +1,2 @@
+- All tests should use the 'testify' framework for assertions
+- All tests must end with the '_test.go' suffix

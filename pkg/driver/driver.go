@@ -10,10 +10,13 @@ type MigrationRecord struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Content     string    `json:"content"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at"`
 	ExecutedAt  time.Time `json:"executed_at"`
 	ExecutionMs int64     `json:"execution_ms"`
-	Success     bool      `json:"success"`
 	Error       string    `json:"error,omitempty"`
+	Success     bool      `json:"success"`
+	HostID      string    `json:"host_id"`
 }
 
 // MigrationLock represents a distributed lock for migrations
@@ -30,7 +33,6 @@ type Driver interface {
 	Initialize(ctx context.Context) error
 
 	// AcquireLock attempts to acquire a distributed lock for migrations
-	// Returns true if lock was acquired, false otherwise
 	AcquireLock(ctx context.Context, lockTimeout time.Duration) (bool, error)
 
 	// ReleaseLock releases the distributed lock

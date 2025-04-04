@@ -3,7 +3,6 @@ package couchbase_test
 import (
 	"context"
 	"fmt"
-	"gotest.tools/v3/assert"
 	"log/slog"
 	"os"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/couchbase/gocb/v2"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/ahbrown41/dbmigrator/pkg/driver/couchbase"
 	"github.com/ahbrown41/dbmigrator/pkg/migrator"
@@ -24,10 +24,6 @@ func TestCouchbaseDriver(t *testing.T) {
 		ReplaceAttr: nil,
 	}))
 	slog.SetDefault(logger)
-	// Skip if running in CI environment without Docker
-	if os.Getenv("CI") != "" && os.Getenv("DOCKER_AVAILABLE") != "true" {
-		t.Skip("Skipping Couchbase test in CI environment without Docker")
-	}
 
 	ctx := context.Background()
 
@@ -35,6 +31,7 @@ func TestCouchbaseDriver(t *testing.T) {
 	username := "Administrator"
 	password := "password"
 	bucketName := "testbucket"
+	scopeName := "my_scope"
 
 	// Start Couchbase container
 	server := NewCouchbaseServer(username, password, bucketName)
@@ -44,15 +41,22 @@ func TestCouchbaseDriver(t *testing.T) {
 	// Create test migrations
 	migrationDir := "./migrations"
 
+	cluster, err := gocb.Connect(server.ConnectionString(), gocb.ClusterOptions{
+		Username: username,
+		Password: password,
+	})
+	assert.NoError(t, err)
+	defer func() {
+		cluster.Close(nil)
+	}()
+
 	// Test basic migration functionality
 	t.Run("BasicMigration", func(t *testing.T) {
-		// Create driver
-		var driver *couchbase.CouchbaseDriver
-		driver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
+		// Create driver - Changed from NewDriver to New
+		driver, err := couchbase.New(cluster, bucketName, scopeName)
 		if err != nil {
 			t.Fatalf("Failed to create driver: %v", err)
 		}
-		defer driver.Close()
 
 		// Initialize the driver
 		if err := driver.Initialize(ctx); err != nil {
@@ -88,8 +92,8 @@ func TestCouchbaseDriver(t *testing.T) {
 		// Count users
 		userCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.profiles
-        `, bucketName)
+            FROM %s.%s.profiles
+        `, bucketName, scopeName)
 
 		userResult, err := cluster.Query(userCountQuery, nil)
 		if err != nil {
@@ -114,8 +118,8 @@ func TestCouchbaseDriver(t *testing.T) {
 		// Count posts
 		postCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.posts
-        `, bucketName)
+            FROM %s.%s.posts
+        `, bucketName, scopeName)
 
 		postResult, err := cluster.Query(postCountQuery, nil)
 		if err != nil {
@@ -188,15 +192,12 @@ func TestCouchbaseDriver(t *testing.T) {
 		defer cancel()
 
 		// First, create and initialize a driver to set up the collections and indexes
-		setupDriver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
-		if err != nil {
-			t.Fatalf("Failed to create setup driver: %v", err)
-		}
+		setupDriver, err := couchbase.New(cluster, bucketName, scopeName)
+		assert.NoError(t, err, "Failed to create setup driver")
 
-		if err := setupDriver.Initialize(ctx); err != nil {
-			t.Fatalf("Failed to initialize setup driver: %v", err)
-		}
-		setupDriver.Close()
+		err = setupDriver.Initialize(ctx)
+		assert.NoError(t, err, "Failed to initialize setup driver")
+		defer setupDriver.Close()
 
 		// Start concurrent migrations
 		for i := 0; i < numConcurrent; i++ {
@@ -205,12 +206,11 @@ func TestCouchbaseDriver(t *testing.T) {
 				defer wg.Done()
 
 				// Create a new driver for each instance
-				driver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
+				driver, err := couchbase.New(cluster, bucketName, scopeName)
 				if err != nil {
 					errCh <- fmt.Errorf("instance %d: failed to create driver: %w", instanceID, err)
 					return
 				}
-				defer driver.Close()
 
 				// Create migrator with lock retry options
 				m := migrator.New(
@@ -259,30 +259,26 @@ func TestCouchbaseDriver(t *testing.T) {
 		}
 
 		if len(errors) > 0 {
+			hadErrors := false
 			for _, err := range errors {
-				t.Logf("Concurrent migration error: %v", err)
+				if !strings.Contains(err.Error(), "failed to acquire lock") {
+					t.Fatalf("Concurrent migration error: %v", err)
+					hadErrors = true
+					continue
+				}
 			}
-			t.Logf("Concurrent migrations had %d errors", len(errors))
+			if hadErrors {
+				t.Errorf("Concurrent migrations had %d errors", len(errors))
+			}
 		}
 
 		// Make sure at least one instance succeeded
-		if successCount == 0 {
-			t.Fatalf("Expected at least one instance to successfully process migrations")
-		}
+		assert.Greaterf(t, successCount, 0, "Expected at least one instance to successfully process migrations")
 		t.Logf("Successfully completed migrations across %d instances", successCount)
 
-		// Verify final state
-		driver, err := couchbase.NewDriver(server.ConnectionString(), username, password, bucketName)
-		assert.NilError(t, err)
-		defer func() {
-			if err := driver.Close(); err != nil {
-				t.Errorf("Failed to close driver: %v", err)
-			}
-		}()
-
 		// Check migrations were recorded exactly once
-		executed, err := driver.GetExecutedMigrations(ctx)
-		assert.NilError(t, err)
+		executed, err := setupDriver.GetExecutedMigrations(ctx)
+		assert.NoError(t, err)
 		assert.Equal(t, 8, len(executed), "Expected exactly 8 migrations, got %d", len(executed))
 
 		// Connect to verify data
@@ -290,7 +286,7 @@ func TestCouchbaseDriver(t *testing.T) {
 			Username: username,
 			Password: password,
 		})
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		defer func() {
 			if err := cluster.Close(nil); err != nil {
 				t.Errorf("Failed to close cluster: %v", err)
@@ -300,11 +296,11 @@ func TestCouchbaseDriver(t *testing.T) {
 		// Count users
 		userCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.profiles
-        `, bucketName)
+            FROM %s.%s.profiles
+        `, bucketName, scopeName)
 
 		userResult, err := cluster.Query(userCountQuery, nil)
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		defer userResult.Close()
 
 		var userCount struct {
@@ -312,23 +308,20 @@ func TestCouchbaseDriver(t *testing.T) {
 		}
 
 		if userResult.Next() {
-			if err := userResult.Row(&userCount); err != nil {
-				t.Fatalf("Failed to parse user count: %v", err)
-			}
+			err := userResult.Row(&userCount)
+			assert.NoError(t, err, "Failed to parse user count: %v", err)
 		}
 
-		if userCount.Count != 1 {
-			t.Fatalf("Expected exactly 1 user, got %d", userCount.Count)
-		}
+		assert.Equal(t, 1, userCount.Count, "Expected at least 1 user, got %d", userCount.Count)
 
 		// Count posts
 		postCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.posts
-        `, bucketName)
+            FROM %s.%s.posts
+        `, bucketName, scopeName)
 
 		postResult, err := cluster.Query(postCountQuery, nil)
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		defer postResult.Close()
 
 		var postCount struct {
@@ -348,11 +341,11 @@ func TestCouchbaseDriver(t *testing.T) {
 		// Count comments
 		commentCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.comments
-        `, bucketName)
+            FROM %s.%s.comments
+        `, bucketName, scopeName)
 
 		commentResult, err := cluster.Query(commentCountQuery, nil)
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		defer commentResult.Close()
 
 		var commentCount struct {
@@ -372,11 +365,11 @@ func TestCouchbaseDriver(t *testing.T) {
 		// Check lock collection is empty (all locks released)
 		lockCountQuery := fmt.Sprintf(`
             SELECT COUNT(*) as count
-            FROM %s._default.schema_migration_locks
-        `, bucketName)
+            FROM %s.%s.schema_migration_locks
+        `, bucketName, scopeName)
 
 		lockResult, err := cluster.Query(lockCountQuery, nil)
-		assert.NilError(t, err)
+		assert.NoError(t, err)
 		defer lockResult.Close()
 
 		var lockCount struct {
@@ -393,5 +386,4 @@ func TestCouchbaseDriver(t *testing.T) {
 			t.Fatalf("Expected 0 locks remaining, got %d", lockCount.Count)
 		}
 	})
-
 }

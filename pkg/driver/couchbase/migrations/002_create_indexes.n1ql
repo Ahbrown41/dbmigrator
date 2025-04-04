@@ -1,8 +1,8 @@
 -- Create primary indexes
-CREATE PRIMARY INDEX ON ${BUCKET}._default.profiles;
-CREATE PRIMARY INDEX ON ${BUCKET}._default.posts;
+CREATE PRIMARY INDEX IF NOT EXISTS ON ${BUCKET}.my_scope.profiles;
+CREATE PRIMARY INDEX IF NOT EXISTS ON ${BUCKET}.my_scope.posts;
 
 -- Create secondary indexes
-CREATE INDEX idx_profiles_email ON ${BUCKET}._default.profiles(email);
-CREATE INDEX idx_posts_author ON ${BUCKET}._default.posts(author);
-CREATE INDEX idx_posts_created ON ${BUCKET}._default.posts(createdAt);
+CREATE INDEX idx_profiles_email IF NOT EXISTS ON ${BUCKET}.my_scope.profiles(email);
+CREATE INDEX idx_posts_author IF NOT EXISTS ON ${BUCKET}.my_scope.posts(author);
+CREATE INDEX idx_posts_created IF NOT EXISTS ON ${BUCKET}.my_scope.posts(createdAt);
